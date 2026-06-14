@@ -4,6 +4,7 @@ import {
   isAmazonOrderHistoryPage,
   getOrderHistoryBaseUrl,
   extractAsinFromUrl,
+  getMarketplaceCurrency,
   AMAZON_DOMAINS,
   ORDER_PATHS,
 } from '../src/utils/urlUtils';
@@ -178,6 +179,33 @@ describe('extractAsinFromUrl', () => {
 
   it('should return null for invalid ASIN format', () => {
     expect(extractAsinFromUrl('https://www.amazon.de/dp/B123')).toBeNull();
+  });
+});
+
+describe('getMarketplaceCurrency', () => {
+  it('should return USD for amazon.com', () => {
+    expect(getMarketplaceCurrency('https://www.amazon.com/your-orders/orders')).toBe('USD');
+  });
+
+  it('should return EUR for amazon.de', () => {
+    expect(getMarketplaceCurrency('https://www.amazon.de/your-orders/orders')).toBe('EUR');
+  });
+
+  it('should return GBP for amazon.co.uk', () => {
+    expect(getMarketplaceCurrency('https://www.amazon.co.uk/your-orders/orders')).toBe('GBP');
+  });
+
+  it('should return CAD for amazon.ca', () => {
+    expect(getMarketplaceCurrency('https://www.amazon.ca/your-orders/orders')).toBe('CAD');
+  });
+
+  it('should handle locale-prefixed amazon.com URLs as USD', () => {
+    expect(getMarketplaceCurrency('https://www.amazon.com/-/de/gp/css/order-history')).toBe('USD');
+  });
+
+  it('should default to USD for unknown or invalid hosts', () => {
+    expect(getMarketplaceCurrency('not a url')).toBe('USD');
+    expect(getMarketplaceCurrency('https://example.com/orders')).toBe('USD');
   });
 });
 

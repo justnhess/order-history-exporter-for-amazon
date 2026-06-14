@@ -22,7 +22,7 @@ export function escapeCSVValue(value: string | number | undefined): string {
 export function formatPromotionsForCSV(
     promotions: { description: string; amount: number }[],
   ): string {
-    return promotions.map((p) => `${p.description}: ${p.amount}`).join('; ');
+    return promotions.map((p) => `${p.description}: €${p.amount}`).join('; ');
 }
 
 /**
@@ -39,6 +39,9 @@ export function convertOrdersToCSV(
           getHeader('csvHeaderOrderDate'),
           getHeader('csvHeaderTotalAmount'),
           getHeader('csvHeaderCurrency'),
+          getHeader('csvHeaderItemSubtotal'),
+          getHeader('csvHeaderTax'),
+          getHeader('csvHeaderRewardsApplied'),
           getHeader('csvHeaderTotalSavings'),
           getHeader('csvHeaderStatus'),
           getHeader('csvHeaderOrderType'),
@@ -67,6 +70,9 @@ export function convertOrdersToCSV(
                                                    escapeCSVValue(order.orderDate),
                                                    order.totalAmount,
                                                    escapeCSVValue(order.currency),
+                                                   order.itemSubtotal ?? '',
+                                                   order.tax ?? '',
+                                                   order.rewardsApplied ?? '',
                                                    order.totalSavings,
                                                    escapeCSVValue(order.orderStatus),
                                                    escapeCSVValue(orderType),
@@ -90,6 +96,9 @@ export function convertOrdersToCSV(
                                                                  escapeCSVValue(order.orderDate),
                                                                  order.totalAmount,
                                                                  escapeCSVValue(order.currency),
+                                                                 index === 0 ? (order.itemSubtotal ?? '') : '',
+                                                                 index === 0 ? (order.tax ?? '') : '',
+                                                                 index === 0 ? (order.rewardsApplied ?? '') : '',
                                                                  index === 0 ? order.totalSavings : '',
                                                                  escapeCSVValue(order.orderStatus),
                                                                  escapeCSVValue(orderType),

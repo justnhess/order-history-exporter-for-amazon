@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { parsePrice, detectCurrency, extractPriceFromText } from '../src/utils/priceUtils';
+import {
+  parsePrice,
+  detectCurrency,
+  extractPriceFromText,
+  parseOrderSummary,
+} from '../src/utils/priceUtils';
 
 describe('parsePrice', () => {
   describe('European format', () => {
@@ -138,5 +143,48 @@ describe('extractPriceFromText', () => {
     it('should not match zero amounts', () => {
       expect(extractPriceFromText('Total: €0,00')).toBeNull();
     });
+  });
+});
+
+describe('parseOrderSummary', () => {
+  // Real markup captured from an order paid entirely with rewards points.
+  const pointsPaid =
+    'Order Summary Item(s) Subtotal: $12.19 Shipping & Handling: $0.00 ' +
+    'Total before tax: $12.19 Estimated tax to be collected: $0.73 ' +
+    'Rewards Points: -$12.92 Grand Total: $0.00';
+
+  it('should extract the item subtotal', () => {
+    expect(parseOrderSummary(pointsPaid).itemSubtotal).toBe(12.19);
+  });
+
+  it('should extract the tax (not "Total before tax")', () => {
+    expect(parseOrderSummary(pointsPaid).tax).toBe(0.73);
+  });
+
+  it('should extract rewards applied as a positive amount', () => {
+    expect(parseOrderSummary(pointsPaid).rewardsApplied).toBe(12.92);
+  });
+
+  it('should extract the grand total of $0.00', () => {
+    expect(parseOrderSummary(pointsPaid).grandTotal).toBe(0);
+  });
+
+  it('should handle a normal card-paid order', () => {
+    const normal =
+      'Order Summary Item(s) Subtotal: $148.38 Estimated tax to be collected: $8.90 ' +
+      'Grand Total: $157.28';
+    const s = parseOrderSummary(normal);
+    expect(s.itemSubtotal).toBe(148.38);
+    expect(s.tax).toBe(8.9);
+    expect(s.rewardsApplied).toBeNull();
+    expect(s.grandTotal).toBe(157.28);
+  });
+
+  it('should return nulls when no summary present', () => {
+    const s = parseOrderSummary('no totals here');
+    expect(s.itemSubtotal).toBeNull();
+    expect(s.tax).toBeNull();
+    expect(s.rewardsApplied).toBeNull();
+    expect(s.grandTotal).toBeNull();
   });
 });

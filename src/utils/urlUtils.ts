@@ -2,8 +2,8 @@
  * URL building and Amazon page detection utilities
  */
 
-// Matches optional locale prefixes like /en/, /de/, /en-gb/, etc.
-const AMAZON_LOCALE_PREFIX = /^\/[a-z]{2}(?:-[a-z]{2,4})?(?=\/)/i;
+// Matches Amazon's locale-switch prefix like /-/de/, /-/en/, /-/en-gb/, etc.
+const AMAZON_LOCALE_PREFIX = /^\/-\/[a-z]{2}(?:-[a-z]{2,4})?(?=\/)/i;
 
 /**
  * Build URL for a specific year and page of Amazon order history.
@@ -47,6 +47,43 @@ export const AMAZON_DOMAINS = [
     'amazon.com.mx',
     'amazon.com.be',
   ];
+
+/**
+ * Currency for each supported Amazon marketplace.
+ * The marketplace domain is the source of truth for currency — text-based
+ * detection is unreliable and was defaulting orders to EUR incorrectly.
+ */
+const MARKETPLACE_CURRENCY: Record<string, string> = {
+    'amazon.com': 'USD',
+    'amazon.co.uk': 'GBP',
+    'amazon.de': 'EUR',
+    'amazon.fr': 'EUR',
+    'amazon.it': 'EUR',
+    'amazon.es': 'EUR',
+    'amazon.ca': 'CAD',
+    'amazon.co.jp': 'JPY',
+    'amazon.in': 'INR',
+    'amazon.com.au': 'AUD',
+    'amazon.com.br': 'BRL',
+    'amazon.com.mx': 'MXN',
+    'amazon.com.be': 'EUR',
+  };
+
+/**
+ * Resolve the currency code for the Amazon marketplace a URL belongs to.
+ * Falls back to USD when the host can't be matched.
+ */
+export function getMarketplaceCurrency(url: string): string {
+    try {
+          const hostname = new URL(url).hostname.replace(/^www\./, '');
+          const domain = AMAZON_DOMAINS.find(
+                  (d) => hostname === d || hostname.endsWith(`.${d}`),
+                );
+          return (domain && MARKETPLACE_CURRENCY[domain]) || 'USD';
+    } catch {
+          return 'USD';
+    }
+}
 
 /**
  * Order history page paths

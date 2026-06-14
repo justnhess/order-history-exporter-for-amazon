@@ -154,8 +154,9 @@ describe('convertOrdersToCSV', () => {
     expect(lines[1]).toMatch(/,10,/);
     // Second item row should have empty savings field
     const secondRowParts = lines[2]!.split(',');
-    // totalSavings is the 5th column (index 4)
-    expect(secondRowParts[4]).toBe('');
+    // Columns: OrderId, OrderDate, TotalAmount, Currency, ItemSubtotal, Tax,
+    // RewardsApplied, TotalSavings(index 7), ...
+    expect(secondRowParts[7]).toBe('');
   });
 
   it('should escape product titles with special characters', () => {

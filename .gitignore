@@ -97,3 +97,6 @@ web-ext-artifacts/
 *.pid
 *.seed
 *.pid.lock
+
+# Playwright MCP investigation artifacts
+.playwright-mcp/

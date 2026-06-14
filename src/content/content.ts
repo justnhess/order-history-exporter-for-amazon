@@ -11,6 +11,7 @@ import {
     filterYearsByDateRange,
     buildOrderPageUrl,
     getOrderHistoryBaseUrl,
+    getMarketplaceCurrency,
     extractAsinFromUrl,
     extractDigitalIdFromUrl,
     isDigitalOrderPage,
@@ -19,7 +20,7 @@ import {
     extractOrderId,
     extractOrderIdFromUrl,
     extractPriceFromText,
-    parsePrice,
+    parseOrderSummary,
     parseOrderStatus,
 } from '../utils';
 
@@ -168,7 +169,7 @@ import {
          const pageNum = Math.floor(state.currentStartIndex / 10) + 1;
          updateProgress(
                  calculateProgress(state),
-                 getMessage('processingYear', [currentYear || '', pageNum]),
+                 getMessage('processingYear', [currentYear || '', String(pageNum)]),
                );
 
       scrapeCurrentPageAndContinue(state);
@@ -261,7 +262,7 @@ import {
               fileName = `amazon-orders-${timestamp}.json`;
               mimeType = 'application/json';
       } else {
-              fileContent = convertOrdersToCSV(state.collectedOrders);
+              fileContent = convertOrdersToCSV(state.collectedOrders, getMessage);
               fileName = `amazon-orders-${timestamp}.csv`;
               mimeType = 'text/csv';
       }
@@ -484,12 +485,14 @@ import {
      */
    function parseOrderElement(orderEl: Element): Order | null {
          const isDigital = isDigitalOrderPage(window.location.href);
+         const orderText = orderEl.textContent || '';
+         const marketplaceCurrency = getMarketplaceCurrency(window.location.href);
 
       const order: Order = {
               orderId: '',
               orderDate: '',
               totalAmount: 0,
-              currency: 'EUR',
+              currency: marketplaceCurrency,
               items: [],
               orderStatus: '',
               detailsUrl: '',
@@ -526,18 +529,18 @@ import {
          }
 
       // Extract order dates from supported locales
-      order.orderDate = parseOrderDate(orderEl) || '';
+      order.orderDate = parseOrderDate(orderText) || '';
 
       // Extract Total Amount
-      const priceResult = extractPriceFromText(orderEl);
+      const priceResult = extractPriceFromText(orderText);
          if (priceResult) {
                  order.totalAmount = priceResult.amount;
-                 order.currency = priceResult.currency;
+                 // Currency comes from the marketplace domain, not the parsed text.
          }
 
       // Extract Order Status (physical orders only - digital orders have no shipping status)
       if (!isDigital) {
-              order.orderStatus = parseOrderStatus(orderEl) || '';
+              order.orderStatus = parseOrderStatus(orderText) || '';
       }
 
       // Extract Items
@@ -772,6 +775,10 @@ import {
                             parsePromotionsFromDetails(order, doc);
                 }
 
+                // Capture the order-summary breakdown (subtotal, tax, rewards/points).
+                // Orders paid entirely with points show Grand Total $0.00 on the card.
+                parseOrderSummaryFromDetails(order, doc);
+
                 await new Promise((r) => setTimeout(r, 200)); // small delay to be polite
            } catch (error) {
                      console.warn('[Amazon Exporter] Error fetching details:', error);
@@ -803,7 +810,7 @@ import {
                                                          '.a-price .a-offscreen, .a-color-price, [class*="item-price"]',
                                                        );
                                              if (priceEl) {
-                                                         const priceResult = parsePrice(priceEl.textContent || '');
+                                                         const priceResult = extractPriceFromText(priceEl.textContent || '');
                                                          if (priceResult && priceResult.amount > 0) {
                                                                        matchedItem.price = priceResult.amount;
                                                          }
@@ -836,12 +843,11 @@ import {
       for (const sel of priceSelectors) {
               const priceEl = doc.querySelector(sel);
               if (priceEl) {
-                        const priceResult = parsePrice(priceEl.textContent || '');
+                        const priceResult = extractPriceFromText(priceEl.textContent || '');
                         if (priceResult && priceResult.amount > 0) {
                                     // Apply to first item (digital orders are typically single-item)
                           if (order.items[0]) {
                                         order.items[0].price = priceResult.amount;
-                                        order.currency = priceResult.currency;
                           }
                                     return;
                         }
@@ -868,7 +874,7 @@ import {
               const promoEls = doc.querySelectorAll(sel);
               promoEls.forEach((el) => {
                         const text = el.textContent || '';
-                        const priceResult = parsePrice(text);
+                        const priceResult = extractPriceFromText(text);
                         if (priceResult && priceResult.amount > 0) {
                                     const description = el.querySelector('[class*="label"], span')?.textContent?.trim() || 'Promotion';
                                     const promotion: Promotion = {
@@ -885,10 +891,23 @@ import {
    }
 
    /**
-     * Convert orders to CSV format
+     * Parse the order-summary breakdown (item subtotal, tax, rewards/points
+     * applied, grand total) from an order details page.
      */
-   function convertToCSV(orders: Order[]): string {
-         return convertOrdersToCSV(orders);
+   function parseOrderSummaryFromDetails(order: Order, doc: Document): void {
+         const summaryEl = doc.querySelector('#od-subtotals, [class*="order-summary"]');
+         const text = summaryEl?.textContent || doc.body.textContent || '';
+         const summary = parseOrderSummary(text);
+
+      if (summary.itemSubtotal !== null) order.itemSubtotal = summary.itemSubtotal;
+         if (summary.tax !== null) order.tax = summary.tax;
+         if (summary.rewardsApplied !== null) order.rewardsApplied = summary.rewardsApplied;
+
+      // The card normally provides the grand total; fall back to the summary
+      // value if the card had none.
+      if (order.totalAmount === 0 && summary.grandTotal !== null) {
+              order.totalAmount = summary.grandTotal;
+      }
    }
 
    /**
@@ -897,8 +916,10 @@ import {
    function updateProgress(percent: number, message: string): void {
          browser.runtime.sendMessage({
                  action: 'updateProgress',
-                 progress: Math.min(100, Math.round(percent)),
-                 message,
+                 data: {
+                         percent: Math.min(100, Math.round(percent)),
+                         message,
+                 },
          }).catch(() => {
                  // Popup may be closed
          });

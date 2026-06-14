@@ -186,8 +186,11 @@ export function filterYearsByDateRange(
     return years;
   }
 
-  const startYear = new Date(startDate).getFullYear();
-  const endYear = new Date(endDate).getFullYear();
+  // Parse the year from the YYYY-MM-DD string directly. Using new Date()
+  // shifts dates like '2022-01-01' into the previous year in negative-UTC
+  // timezones because the string is interpreted as UTC midnight.
+  const startYear = parseInt(startDate.slice(0, 4), 10);
+  const endYear = parseInt(endDate.slice(0, 4), 10);
 
   return years.filter((year) => {
     const yearNum = parseInt(year, 10);

@@ -82,3 +82,50 @@ export function extractPriceFromText(text: string): { amount: number; currency: 
 
   return null;
 }
+
+export interface OrderSummary {
+  itemSubtotal: number | null;
+  tax: number | null;
+  rewardsApplied: number | null;
+  grandTotal: number | null;
+}
+
+/**
+ * Parse the order-summary block from an Amazon order details page.
+ * Extracts the sub-totals that aren't shown on the order card, so orders paid
+ * with rewards points or gift-card balance (Grand Total $0.00) still carry
+ * their real item value. Returns null for any line that isn't present.
+ */
+export function parseOrderSummary(text: string): OrderSummary {
+  // For a given set of label variants, find the first labelled amount.
+  // Variants are tried most-specific first so "Estimated tax to be collected"
+  // wins over a bare "Tax" that would also match "Total before tax".
+  const amountFor = (labels: string[]): number | null => {
+    for (const label of labels) {
+      const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const re = new RegExp(`${escaped}\\s*:?\\s*(-?)\\s*[$€£]?\\s*([0-9][0-9.,]*)`, 'i');
+      const match = text.match(re);
+      if (match?.[2]) {
+        const value = parsePrice(match[2]);
+        return match[1] === '-' ? -value : value;
+      }
+    }
+    return null;
+  };
+
+  const rewards = amountFor([
+    'Rewards Points',
+    'Reward Points',
+    'Points Redeemed',
+    'Gift Card Amount',
+    'Gift Card',
+  ]);
+
+  return {
+    itemSubtotal: amountFor(['Item(s) Subtotal', 'Items Subtotal', 'Item Subtotal', 'Subtotal']),
+    tax: amountFor(['Estimated tax to be collected', 'Tax Collected', 'Estimated Tax', 'Tax']),
+    // Stored as a positive "amount applied" regardless of how Amazon signs it.
+    rewardsApplied: rewards === null ? null : Math.abs(rewards),
+    grandTotal: amountFor(['Grand Total', 'Order Total']),
+  };
+}

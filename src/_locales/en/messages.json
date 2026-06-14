@@ -179,6 +179,30 @@
     "message": "Currency",
     "description": "CSV header for currency"
   },
+  "csvHeaderItemSubtotal": {
+    "message": "Item Subtotal",
+    "description": "CSV header for the pre-tax item subtotal"
+  },
+  "csvHeaderTax": {
+    "message": "Tax",
+    "description": "CSV header for tax collected"
+  },
+  "csvHeaderRewardsApplied": {
+    "message": "Rewards/Points Applied",
+    "description": "CSV header for rewards points or gift-card amount applied"
+  },
+  "csvHeaderOrderType": {
+    "message": "Order Type",
+    "description": "CSV header for order type (physical or digital)"
+  },
+  "csvHeaderItemDigitalId": {
+    "message": "Digital ID",
+    "description": "CSV header for digital content ID"
+  },
+  "csvHeaderItemContentType": {
+    "message": "Content Type",
+    "description": "CSV header for digital content type"
+  },
   "csvHeaderTotalSavings": {
     "message": "Total Savings",
     "description": "CSV header for total savings"
