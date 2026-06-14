@@ -6,922 +6,925 @@
 import browser from 'webextension-polyfill';
 import type { ExportOptions, ExportState, Order, OrderItem, Promotion } from '../types';
 import {
-    parseOrderDate,
-    extractOrderYear,
-    filterYearsByDateRange,
-    buildOrderPageUrl,
-    getOrderHistoryBaseUrl,
-    getMarketplaceCurrency,
-    extractAsinFromUrl,
-    extractDigitalIdFromUrl,
-    isDigitalOrderPage,
-    isAdvertisementOrder,
-    convertOrdersToCSV,
-    extractOrderId,
-    extractOrderIdFromUrl,
-    extractPriceFromText,
-    parseOrderSummary,
-    parseOrderStatus,
+  parseOrderDate,
+  extractOrderYear,
+  filterYearsByDateRange,
+  buildOrderPageUrl,
+  getOrderHistoryBaseUrl,
+  getMarketplaceCurrency,
+  extractAsinFromUrl,
+  extractDigitalIdFromUrl,
+  isDigitalOrderPage,
+  isAdvertisementOrder,
+  convertOrdersToCSV,
+  extractOrderId,
+  extractOrderIdFromUrl,
+  extractPriceFromText,
+  parseOrderSummary,
+  parseOrderStatus,
 } from '../utils';
 
 (function (): void {
-    'use strict';
+  'use strict';
 
-   const STORAGE_KEY = 'amazonExporter';
+  const STORAGE_KEY = 'amazonExporter';
 
-   /**
-     * Get localized message from browser i18n API
-     */
-   function getMessage(key: string, substitutions?: string | string[]): string {
-         return browser.i18n.getMessage(key, substitutions) || key;
-   }
+  /**
+   * Get localized message from browser i18n API
+   */
+  function getMessage(key: string, substitutions?: string | string[]): string {
+    return browser.i18n.getMessage(key, substitutions) || key;
+  }
 
-   // Check if we're in the middle of an export operation
-   checkExportState();
+  // Check if we're in the middle of an export operation
+  checkExportState();
 
-   // Listen for messages from popup
-   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-   browser.runtime.onMessage.addListener((message: any, _sender: any) => {
-         const msg = message as { action: string; options?: ExportOptions };
+  // Listen for messages from popup
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  browser.runtime.onMessage.addListener((message: any, _sender: any) => {
+    const msg = message as { action: string; options?: ExportOptions };
 
-                                             if (msg.action === 'exportOrders' && msg.options) {
-                                                     startExport(msg.options);
-                                                     return Promise.resolve({ success: true, message: 'Export started' });
-                                             }
-         if (msg.action === 'getExportStatus') {
-                 const state = getExportState();
-                 return Promise.resolve(state ? { success: true, ...state } : { success: false });
-         }
+    if (msg.action === 'exportOrders' && msg.options) {
+      startExport(msg.options);
+      return Promise.resolve({ success: true, message: 'Export started' });
+    }
+    if (msg.action === 'getExportStatus') {
+      const state = getExportState();
+      return Promise.resolve(state ? { success: true, ...state } : { success: false });
+    }
 
-                                             return undefined;
-   });
+    return undefined;
+  });
 
-   /**
-     * Get export state from sessionStorage
-     */
-   function getExportState(): ExportState | null {
-         try {
-                 const data = sessionStorage.getItem(STORAGE_KEY);
-                 return data ? (JSON.parse(data) as ExportState) : null;
-         } catch {
-                 return null;
-         }
-   }
+  /**
+   * Get export state from sessionStorage
+   */
+  function getExportState(): ExportState | null {
+    try {
+      const data = sessionStorage.getItem(STORAGE_KEY);
+      return data ? (JSON.parse(data) as ExportState) : null;
+    } catch {
+      return null;
+    }
+  }
 
-   /**
-     * Save export state to sessionStorage
-     */
-   function saveExportState(state: ExportState): void {
-         sessionStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-   }
+  /**
+   * Save export state to sessionStorage
+   */
+  function saveExportState(state: ExportState): void {
+    sessionStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  }
 
-   /**
-     * Clear export state
-     */
-   function clearExportState(): void {
-         sessionStorage.removeItem(STORAGE_KEY);
-   }
+  /**
+   * Clear export state
+   */
+  function clearExportState(): void {
+    sessionStorage.removeItem(STORAGE_KEY);
+  }
 
-   /**
-     * Check if we should continue an export after page navigation
-     */
-   function checkExportState(): void {
-         // Wait for page to be fully loaded
-      if (document.readyState !== 'complete') {
-              window.addEventListener('load', () => {
-                        setTimeout(checkExportState, 500);
-              });
-              return;
+  /**
+   * Check if we should continue an export after page navigation
+   */
+  function checkExportState(): void {
+    // Wait for page to be fully loaded
+    if (document.readyState !== 'complete') {
+      window.addEventListener('load', () => {
+        setTimeout(checkExportState, 500);
+      });
+      return;
+    }
+
+    // Additional delay to let Amazon's JS render
+    setTimeout(() => {
+      const state = getExportState();
+      if (state && state.inProgress) {
+        console.log('[Amazon Exporter]', getMessage('resumingExport'), state);
+        continueExport(state);
       }
+    }, 1500);
+  }
 
-      // Additional delay to let Amazon's JS render
-      setTimeout(() => {
-              const state = getExportState();
-              if (state && state.inProgress) {
-                        console.log('[Amazon Exporter]', getMessage('resumingExport'), state);
-                        continueExport(state);
-              }
-      }, 1500);
-   }
+  /**
+   * Start a new export
+   */
+  function startExport(options: ExportOptions): void {
+    const { format, startDate, endDate, exportAll } = options;
 
-   /**
-     * Start a new export
-     */
-   function startExport(options: ExportOptions): void {
-         const { format, startDate, endDate, exportAll } = options;
+    // Get available years
+    const years = getAvailableYears();
+    console.log('[Amazon Exporter] Found years:', years);
 
-      // Get available years
-      const years = getAvailableYears();
-         console.log('[Amazon Exporter] Found years:', years);
+    // Filter years based on date range
+    const yearsToProcess = exportAll
+      ? [...years]
+      : filterYearsByDateRange(years, startDate, endDate);
 
-      // Filter years based on date range
-      const yearsToProcess = exportAll
-           ? [...years]
-              : filterYearsByDateRange(years, startDate, endDate);
+    console.log('[Amazon Exporter] Years to process:', yearsToProcess);
 
-      console.log('[Amazon Exporter] Years to process:', yearsToProcess);
+    if (yearsToProcess.length === 0) {
+      alert(getMessage('noYearsFound'));
+      return;
+    }
 
-      if (yearsToProcess.length === 0) {
-              alert(getMessage('noYearsFound'));
-              return;
+    // Initialize export state
+    const state: ExportState = {
+      inProgress: true,
+      format: format,
+      startDate: startDate,
+      endDate: endDate,
+      exportAll: exportAll,
+      yearsToProcess: yearsToProcess,
+      currentYearIndex: 0,
+      currentStartIndex: 0,
+      collectedOrders: [],
+      seenOrderIds: [],
+      baseUrl: getOrderHistoryBaseUrl(window.location.href),
+    };
+
+    saveExportState(state);
+
+    const firstYear = yearsToProcess[0];
+    if (!firstYear) return;
+
+    // Navigate to first year's first page
+    const firstUrl = buildOrderPageUrl(state.baseUrl, firstYear, 0);
+    console.log('[Amazon Exporter] Starting export, navigating to:', firstUrl);
+
+    // If we're already on the right page, scrape directly
+    if (
+      window.location.href.includes(`year-${firstYear}`) &&
+      !window.location.href.includes('startIndex')
+    ) {
+      scrapeCurrentPageAndContinue(state);
+    } else {
+      window.location.href = firstUrl;
+    }
+  }
+
+  /**
+   * Continue an export after page navigation
+   */
+  function continueExport(state: ExportState): void {
+    const currentYear = state.yearsToProcess[state.currentYearIndex];
+    const pageNum = Math.floor(state.currentStartIndex / 10) + 1;
+    updateProgress(
+      calculateProgress(state),
+      getMessage('processingYear', [currentYear || '', String(pageNum)])
+    );
+
+    scrapeCurrentPageAndContinue(state);
+  }
+
+  /**
+   * Scrape the current page and decide what to do next
+   */
+  function scrapeCurrentPageAndContinue(state: ExportState): void {
+    const startDateObj = state.startDate ? new Date(state.startDate) : null;
+    const endDateObj = state.endDate ? new Date(state.endDate) : null;
+
+    // Scrape orders from current page
+    const pageOrders = scrapeVisibleOrders(
+      startDateObj,
+      endDateObj,
+      state.exportAll,
+      new Set(state.seenOrderIds)
+    );
+
+    console.log('[Amazon Exporter] Found', pageOrders.length, 'orders on this page');
+
+    // Add to collected orders (avoiding duplicates)
+    pageOrders.forEach((order) => {
+      if (!state.seenOrderIds.includes(order.orderId)) {
+        state.collectedOrders.push(order);
+        state.seenOrderIds.push(order.orderId);
       }
+    });
 
-      // Initialize export state
-      const state: ExportState = {
-              inProgress: true,
-              format: format,
-              startDate: startDate,
-              endDate: endDate,
-              exportAll: exportAll,
-              yearsToProcess: yearsToProcess,
-              currentYearIndex: 0,
-              currentStartIndex: 0,
-              collectedOrders: [],
-              seenOrderIds: [],
-              baseUrl: getOrderHistoryBaseUrl(window.location.href),
-      };
+    // Check if there are more pages for current year
+    const hasNextPage = checkForNextPage();
 
+    if (hasNextPage && pageOrders.length > 0) {
+      // Navigate to next page of current year
+      state.currentStartIndex += 10;
       saveExportState(state);
 
-      const firstYear = yearsToProcess[0];
-         if (!firstYear) return;
+      const currentYear = state.yearsToProcess[state.currentYearIndex];
+      if (!currentYear) return;
 
-      // Navigate to first year's first page
-      const firstUrl = buildOrderPageUrl(state.baseUrl, firstYear, 0);
-         console.log('[Amazon Exporter] Starting export, navigating to:', firstUrl);
+      const nextUrl = buildOrderPageUrl(state.baseUrl, currentYear, state.currentStartIndex);
+      console.log('[Amazon Exporter] Navigating to next page:', nextUrl);
+      window.location.href = nextUrl;
+      return;
+    }
 
-      // If we're already on the right page, scrape directly
-      if (
-              window.location.href.includes(`year-${firstYear}`) &&
-              !window.location.href.includes('startIndex')
+    // Move to next year
+    state.currentYearIndex++;
+    state.currentStartIndex = 0;
+
+    if (state.currentYearIndex < state.yearsToProcess.length) {
+      // Navigate to first page of next year
+      saveExportState(state);
+
+      const nextYear = state.yearsToProcess[state.currentYearIndex];
+      if (!nextYear) return;
+
+      const nextUrl = buildOrderPageUrl(state.baseUrl, nextYear, 0);
+      console.log('[Amazon Exporter] Navigating to next year:', nextUrl);
+      window.location.href = nextUrl;
+      return;
+    }
+
+    // All done - finish export
+    finishExport(state);
+  }
+
+  /**
+   * Finish the export and download the file
+   */
+  async function finishExport(state: ExportState): Promise<void> {
+    console.log('[Amazon Exporter] Export complete. Total orders:', state.collectedOrders.length);
+
+    updateProgress(80, getMessage('fetchingPrices', [String(state.collectedOrders.length)]));
+
+    // Fetch item prices for orders
+    await fetchOrderDetailsForPrices(state.collectedOrders);
+
+    updateProgress(95, getMessage('generatingFile'));
+
+    // Generate file
+    let fileContent: string;
+    let fileName: string;
+    let mimeType: string;
+    const timestamp = new Date().toISOString().slice(0, 10);
+
+    if (state.format === 'json') {
+      fileContent = JSON.stringify(state.collectedOrders, null, 2);
+      fileName = `amazon-orders-${timestamp}.json`;
+      mimeType = 'application/json';
+    } else {
+      fileContent = convertOrdersToCSV(state.collectedOrders, getMessage);
+      fileName = `amazon-orders-${timestamp}.csv`;
+      mimeType = 'text/csv';
+    }
+
+    // Download via background script
+    await browser.runtime.sendMessage({
+      action: 'downloadFile',
+      data: {
+        content: fileContent,
+        fileName: fileName,
+        mimeType: mimeType,
+      },
+    });
+
+    updateProgress(100, getMessage('exportComplete', [String(state.collectedOrders.length)]));
+
+    // Clear state
+    clearExportState();
+  }
+
+  /**
+   * Calculate progress percentage
+   */
+  function calculateProgress(state: ExportState): number {
+    const yearProgress = state.currentYearIndex / state.yearsToProcess.length;
+    const pageProgress = state.currentStartIndex / 100;
+    return Math.floor((yearProgress + pageProgress / state.yearsToProcess.length) * 75) + 5;
+  }
+
+  /**
+   * Get available years from the order filter dropdown
+   */
+  function getAvailableYears(): string[] {
+    const years: string[] = [];
+
+    // Try different selectors for the year/time filter
+    const selectors = [
+      '#time-filter',
+      '#orderFilter',
+      'select[name="timeFilter"]',
+      'select[name="orderFilter"]',
+      '[data-action="a-dropdown-button"]',
+      '.a-dropdown-container select',
+      '#a-autoid-1-announce',
+      '[id*="dropdown"] select',
+      'form select',
+    ];
+
+    for (const selector of selectors) {
+      const dropdown = document.querySelector(selector);
+      if (dropdown) {
+        const options = dropdown.querySelectorAll('option');
+        options.forEach((option) => {
+          const value = (option as HTMLOptionElement).value || '';
+          const year = extractOrderYear(value);
+          if (year) {
+            years.push(year);
+          }
+        });
+        if (years.length > 0) break;
+      }
+    }
+
+    // Check for year links
+    const yearLinks = document.querySelectorAll('a[href*="timeFilter=year-"]');
+    yearLinks.forEach((link) => {
+      const href = (link as HTMLAnchorElement).href;
+      const year = extractOrderYear(href);
+      if (year && !years.includes(year)) {
+        years.push(year);
+      }
+    });
+
+    // Check dropdown items in Amazon's custom dropdown
+    const dropdownItems = document.querySelectorAll(
+      '[data-value*="year-"], .a-popover-inner li, #orderFilter option'
+    );
+    dropdownItems.forEach((item) => {
+      const value =
+        item.getAttribute('data-value') ||
+        (item as HTMLOptionElement).value ||
+        item.textContent ||
+        '';
+      const year = extractOrderYear(value);
+      if (year && !years.includes(year)) {
+        years.push(year);
+      }
+    });
+
+    // If no years found, generate recent years
+    if (years.length === 0) {
+      const currentYear = new Date().getFullYear();
+      for (let y = currentYear; y >= currentYear - 10; y--) {
+        years.push(y.toString());
+      }
+    }
+
+    return years;
+  }
+
+  /**
+   * Check if there's a next page
+   */
+  function checkForNextPage(): boolean {
+    const nextSelectors = [
+      '.a-pagination .a-last:not(.a-disabled) a',
+      'a[aria-label*="Nächste"]',
+      'a[aria-label*="Next"]',
+      '.a-pagination li:last-child:not(.a-disabled) a',
+      'a.a-last:not(.a-disabled)',
+    ];
+
+    for (const selector of nextSelectors) {
+      const nextBtn = document.querySelector(selector);
+      if (nextBtn) {
+        console.log('[Amazon Exporter] Next page button found');
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  /**
+   * Scrape orders from the currently visible page
+   */
+  function scrapeVisibleOrders(
+    startDateObj: Date | null,
+    endDateObj: Date | null,
+    exportAll: boolean,
+    seenOrderIds: Set<string>
+  ): Order[] {
+    const orders: Order[] = [];
+
+    console.log('[Amazon Exporter] Scraping visible page...');
+    console.log('[Amazon Exporter] URL:', window.location.href);
+
+    // Try multiple selectors for order cards
+    const orderSelectors = [
+      '.order-card',
+      '.order',
+      '[data-component="orderCard"]',
+      '.a-box-group.order',
+      '.your-orders-content-container .a-box-group',
+      '#ordersContainer .order-card',
+      '.js-order-card',
+      '[class*="order-card"]',
+    ];
+
+    let orderElements: NodeListOf<Element> | Element[] =
+      document.querySelectorAll('.__nonexistent__');
+    for (const selector of orderSelectors) {
+      orderElements = document.querySelectorAll(selector);
+      if (orderElements.length > 0) {
+        console.log(
+          `[Amazon Exporter] Found ${orderElements.length} orders with selector: ${selector}`
+        );
+        break;
+      }
+    }
+
+    // Fallback: find elements containing order IDs
+    if (orderElements.length === 0) {
+      const orderIdPattern = /(?:D\d{2}-|\d{3}-)\d{7}-\d{7}/;
+      const potentialOrders = new Set<Element>();
+
+      document.querySelectorAll('*').forEach((el) => {
+        if (el.textContent && orderIdPattern.test(el.textContent)) {
+          let parent = el.parentElement;
+          while (parent) {
+            if (
+              parent.classList.contains('a-box') ||
+              parent.classList.contains('a-box-group') ||
+              parent.classList.contains('order-card')
             ) {
-              scrapeCurrentPageAndContinue(state);
-      } else {
-              window.location.href = firstUrl;
-      }
-   }
-
-   /**
-     * Continue an export after page navigation
-     */
-   function continueExport(state: ExportState): void {
-         const currentYear = state.yearsToProcess[state.currentYearIndex];
-         const pageNum = Math.floor(state.currentStartIndex / 10) + 1;
-         updateProgress(
-                 calculateProgress(state),
-                 getMessage('processingYear', [currentYear || '', String(pageNum)]),
-               );
-
-      scrapeCurrentPageAndContinue(state);
-   }
-
-   /**
-     * Scrape the current page and decide what to do next
-     */
-   function scrapeCurrentPageAndContinue(state: ExportState): void {
-         const startDateObj = state.startDate ? new Date(state.startDate) : null;
-         const endDateObj = state.endDate ? new Date(state.endDate) : null;
-
-      // Scrape orders from current page
-      const pageOrders = scrapeVisibleOrders(
-              startDateObj,
-              endDateObj,
-              state.exportAll,
-              new Set(state.seenOrderIds),
-            );
-
-      console.log('[Amazon Exporter] Found', pageOrders.length, 'orders on this page');
-
-      // Add to collected orders (avoiding duplicates)
-      pageOrders.forEach((order) => {
-              if (!state.seenOrderIds.includes(order.orderId)) {
-                        state.collectedOrders.push(order);
-                        state.seenOrderIds.push(order.orderId);
-              }
+              potentialOrders.add(parent);
+              break;
+            }
+            parent = parent.parentElement;
+          }
+        }
       });
 
-      // Check if there are more pages for current year
-      const hasNextPage = checkForNextPage();
+      orderElements = Array.from(potentialOrders);
+      console.log(`[Amazon Exporter] Fallback found ${orderElements.length} order containers`);
+    }
 
-      if (hasNextPage && pageOrders.length > 0) {
-              // Navigate to next page of current year
-           state.currentStartIndex += 10;
-              saveExportState(state);
+    orderElements.forEach((orderEl, index) => {
+      try {
+        const order = parseOrderElement(orderEl);
+        if (order && order.orderId) {
+          // Skip duplicates
+          if (seenOrderIds.has(order.orderId)) {
+            return;
+          }
 
-           const currentYear = state.yearsToProcess[state.currentYearIndex];
-              if (!currentYear) return;
-
-           const nextUrl = buildOrderPageUrl(state.baseUrl, currentYear, state.currentStartIndex);
-              console.log('[Amazon Exporter] Navigating to next page:', nextUrl);
-              window.location.href = nextUrl;
+          // Filter by date if specified
+          if (!exportAll && startDateObj && endDateObj && order.orderDate) {
+            const orderDateObj = new Date(order.orderDate);
+            if (orderDateObj < startDateObj || orderDateObj > endDateObj) {
               return;
+            }
+          }
+
+          orders.push(order);
+          console.log(
+            `[Amazon Exporter] Parsed order: ${order.orderId}, ${order.orderDate}, ${order.totalAmount} ${order.currency}`
+          );
+        }
+      } catch (error) {
+        console.warn(`[Amazon Exporter] Failed to parse order ${index}:`, error);
       }
+    });
 
-      // Move to next year
-      state.currentYearIndex++;
-         state.currentStartIndex = 0;
+    return orders;
+  }
 
-      if (state.currentYearIndex < state.yearsToProcess.length) {
-              // Navigate to first page of next year
-           saveExportState(state);
+  /**
+   * Parse a single order element
+   */
+  function parseOrderElement(orderEl: Element): Order | null {
+    const isDigital = isDigitalOrderPage(window.location.href);
+    const orderText = orderEl.textContent || '';
+    const marketplaceCurrency = getMarketplaceCurrency(window.location.href);
 
-           const nextYear = state.yearsToProcess[state.currentYearIndex];
-              if (!nextYear) return;
+    const order: Order = {
+      orderId: '',
+      orderDate: '',
+      totalAmount: 0,
+      currency: marketplaceCurrency,
+      items: [],
+      orderStatus: '',
+      detailsUrl: '',
+      promotions: [],
+      totalSavings: 0,
+      orderType: isDigital ? 'digital' : 'physical',
+    };
 
-           const nextUrl = buildOrderPageUrl(state.baseUrl, nextYear, 0);
-              console.log('[Amazon Exporter] Navigating to next year:', nextUrl);
-              window.location.href = nextUrl;
-              return;
+    // Extract order ID from yohtmlc-order-id span or text content
+    const orderIdEl = orderEl.querySelector('.yohtmlc-order-id');
+    if (orderIdEl) {
+      const idText = orderIdEl.textContent || '';
+      const extracted = extractOrderId(idText);
+      if (extracted) order.orderId = extracted;
+    }
+
+    // Fallback: scan all text for order ID pattern
+    if (!order.orderId) {
+      const fullText = orderEl.textContent || '';
+      const extracted = extractOrderId(fullText);
+      if (extracted) order.orderId = extracted;
+    }
+
+    // Extract order details URL
+    const detailsLink = orderEl.querySelector(
+      'a[href*="order-details"], a[href*="orderID="], a[href*="orderId="]'
+    ) as HTMLAnchorElement | null;
+    if (detailsLink) {
+      order.detailsUrl = detailsLink.href;
+      if (!order.orderId) {
+        const idFromUrl = extractOrderIdFromUrl(detailsLink.href);
+        if (idFromUrl) order.orderId = idFromUrl;
       }
+    }
 
-      // All done - finish export
-      finishExport(state);
-   }
+    // Extract order dates from supported locales
+    order.orderDate = parseOrderDate(orderText) || '';
 
-   /**
-     * Finish the export and download the file
-     */
-   async function finishExport(state: ExportState): Promise<void> {
-         console.log('[Amazon Exporter] Export complete. Total orders:', state.collectedOrders.length);
+    // Extract Total Amount
+    const priceResult = extractPriceFromText(orderText);
+    if (priceResult) {
+      order.totalAmount = priceResult.amount;
+      // Currency comes from the marketplace domain, not the parsed text.
+    }
 
-      updateProgress(80, getMessage('fetchingPrices', [String(state.collectedOrders.length)]));
+    // Extract Order Status (physical orders only - digital orders have no shipping status)
+    if (!isDigital) {
+      order.orderStatus = parseOrderStatus(orderText) || '';
+    }
 
-      // Fetch item prices for orders
-      await fetchOrderDetailsForPrices(state.collectedOrders);
+    // Extract Items
+    order.items = isDigital ? parseDigitalOrderItems(orderEl) : parseOrderItems(orderEl);
 
-      updateProgress(95, getMessage('generatingFile'));
+    // Filter out advertisement/fake orders
+    if (isAdvertisementOrder(order)) {
+      console.log('[Amazon Exporter] Skipping advertisement order:', order.orderId);
+      return null;
+    }
 
-      // Generate file
-      let fileContent: string;
-         let fileName: string;
-         let mimeType: string;
-         const timestamp = new Date().toISOString().slice(0, 10);
+    return order;
+  }
 
-      if (state.format === 'json') {
-              fileContent = JSON.stringify(state.collectedOrders, null, 2);
-              fileName = `amazon-orders-${timestamp}.json`;
-              mimeType = 'application/json';
-      } else {
-              fileContent = convertOrdersToCSV(state.collectedOrders, getMessage);
-              fileName = `amazon-orders-${timestamp}.csv`;
-              mimeType = 'text/csv';
-      }
+  /**
+   * Parse items from a physical order element
+   */
+  function parseOrderItems(orderEl: Element): OrderItem[] {
+    const items: OrderItem[] = [];
+    const seenAsins = new Set<string>();
 
-      // Download via background script
-      await browser.runtime.sendMessage({
-              action: 'downloadFile',
-              data: {
-                        content: fileContent,
-                        fileName: fileName,
-                        mimeType: mimeType,
-              },
-      });
+    // Find all product links
+    const productLinks = orderEl.querySelectorAll(
+      'a[href*="/dp/"], a[href*="/product/"], a[href*="/gp/product/"]'
+    );
 
-      updateProgress(100, getMessage('exportComplete', [String(state.collectedOrders.length)]));
+    productLinks.forEach((link) => {
+      const anchor = link as HTMLAnchorElement;
+      const asin = extractAsinFromUrl(anchor.href);
+      if (!asin) return;
 
-      // Clear state
-      clearExportState();
-   }
+      if (seenAsins.has(asin)) return;
+      seenAsins.add(asin);
 
-   /**
-     * Calculate progress percentage
-     */
-   function calculateProgress(state: ExportState): number {
-         const yearProgress = state.currentYearIndex / state.yearsToProcess.length;
-         const pageProgress = state.currentStartIndex / 100;
-         return Math.floor((yearProgress + pageProgress / state.yearsToProcess.length) * 75) + 5;
-   }
-
-   /**
-     * Get available years from the order filter dropdown
-     */
-   function getAvailableYears(): string[] {
-         const years: string[] = [];
-
-      // Try different selectors for the year/time filter
-      const selectors = [
-              '#time-filter',
-              '#orderFilter',
-              'select[name="timeFilter"]',
-              'select[name="orderFilter"]',
-              '[data-action="a-dropdown-button"]',
-              '.a-dropdown-container select',
-              '#a-autoid-1-announce',
-              '[id*="dropdown"] select',
-              'form select',
-            ];
-
-      for (const selector of selectors) {
-              const dropdown = document.querySelector(selector);
-              if (dropdown) {
-                        const options = dropdown.querySelectorAll('option');
-                        options.forEach((option) => {
-                                    const value = (option as HTMLOptionElement).value || '';
-                                    const year = extractOrderYear(value);
-                                    if (year) {
-                                                  years.push(year);
-                                    }
-                        });
-                        if (years.length > 0) break;
-              }
-      }
-
-      // Check for year links
-      const yearLinks = document.querySelectorAll('a[href*="timeFilter=year-"]');
-         yearLinks.forEach((link) => {
-                 const href = (link as HTMLAnchorElement).href;
-                 const year = extractOrderYear(href);
-                 if (year && !years.includes(year)) {
-                           years.push(year);
-                 }
-         });
-
-      // Check dropdown items in Amazon's custom dropdown
-      const dropdownItems = document.querySelectorAll(
-              '[data-value*="year-"], .a-popover-inner li, #orderFilter option',
-            );
-         dropdownItems.forEach((item) => {
-                 const value =
-                           item.getAttribute('data-value') ||
-                           (item as HTMLOptionElement).value ||
-                           item.textContent ||
-                           '';
-                 const year = extractOrderYear(value);
-                 if (year && !years.includes(year)) {
-                           years.push(year);
-                 }
-         });
-
-      // If no years found, generate recent years
-      if (years.length === 0) {
-              const currentYear = new Date().getFullYear();
-              for (let y = currentYear; y >= currentYear - 10; y--) {
-                        years.push(y.toString());
-              }
-      }
-
-      return years;
-   }
-
-   /**
-     * Check if there's a next page
-     */
-   function checkForNextPage(): boolean {
-         const nextSelectors = [
-                 '.a-pagination .a-last:not(.a-disabled) a',
-                 'a[aria-label*="Nächste"]',
-                 'a[aria-label*="Next"]',
-                 '.a-pagination li:last-child:not(.a-disabled) a',
-                 'a.a-last:not(.a-disabled)',
-               ];
-
-      for (const selector of nextSelectors) {
-              const nextBtn = document.querySelector(selector);
-              if (nextBtn) {
-                        console.log('[Amazon Exporter] Next page button found');
-                        return true;
-              }
-      }
-
-      return false;
-   }
-
-   /**
-     * Scrape orders from the currently visible page
-     */
-   function scrapeVisibleOrders(
-         startDateObj: Date | null,
-         endDateObj: Date | null,
-         exportAll: boolean,
-         seenOrderIds: Set<string>,
-       ): Order[] {
-         const orders: Order[] = [];
-
-      console.log('[Amazon Exporter] Scraping visible page...');
-         console.log('[Amazon Exporter] URL:', window.location.href);
-
-      // Try multiple selectors for order cards
-      const orderSelectors = [
-              '.order-card',
-              '.order',
-              '[data-component="orderCard"]',
-              '.a-box-group.order',
-              '.your-orders-content-container .a-box-group',
-              '#ordersContainer .order-card',
-              '.js-order-card',
-              '[class*="order-card"]',
-            ];
-
-      let orderElements: NodeListOf<Element> | Element[] =
-              document.querySelectorAll('.__nonexistent__');
-         for (const selector of orderSelectors) {
-                 orderElements = document.querySelectorAll(selector);
-                 if (orderElements.length > 0) {
-                           console.log(
-                                       `[Amazon Exporter] Found ${orderElements.length} orders with selector: ${selector}`,
-                                     );
-                           break;
-                 }
-         }
-
-      // Fallback: find elements containing order IDs
-      if (orderElements.length === 0) {
-              const orderIdPattern = /(?:D\d{2}-|\d{3}-)\d{7}-\d{7}/;
-              const potentialOrders = new Set<Element>();
-
-           document.querySelectorAll('*').forEach((el) => {
-                     if (el.textContent && orderIdPattern.test(el.textContent)) {
-                                 let parent = el.parentElement;
-                                 while (parent) {
-                                               if (
-                                                               parent.classList.contains('a-box') ||
-                                                               parent.classList.contains('a-box-group') ||
-                                                               parent.classList.contains('order-card')
-                                                             ) {
-                                                               potentialOrders.add(parent);
-                                                               break;
-                                               }
-                                               parent = parent.parentElement;
-                                 }
-                     }
-           });
-
-           orderElements = Array.from(potentialOrders);
-              console.log(`[Amazon Exporter] Fallback found ${orderElements.length} order containers`);
-      }
-
-      orderElements.forEach((orderEl, index) => {
-              try {
-                        const order = parseOrderElement(orderEl);
-                        if (order && order.orderId) {
-                                    // Skip duplicates
-                          if (seenOrderIds.has(order.orderId)) {
-                                        return;
-                          }
-
-                          // Filter by date if specified
-                          if (!exportAll && startDateObj && endDateObj && order.orderDate) {
-                                        const orderDateObj = new Date(order.orderDate);
-                                        if (orderDateObj < startDateObj || orderDateObj > endDateObj) {
-                                                        return;
-                                        }
-                          }
-
-                          orders.push(order);
-                                    console.log(
-                                                  `[Amazon Exporter] Parsed order: ${order.orderId}, ${order.orderDate}, ${order.totalAmount} ${order.currency}`,
-                                                );
-                        }
-              } catch (error) {
-                        console.warn(`[Amazon Exporter] Failed to parse order ${index}:`, error);
-              }
-      });
-
-      return orders;
-   }
-
-   /**
-     * Parse a single order element
-     */
-   function parseOrderElement(orderEl: Element): Order | null {
-         const isDigital = isDigitalOrderPage(window.location.href);
-         const orderText = orderEl.textContent || '';
-         const marketplaceCurrency = getMarketplaceCurrency(window.location.href);
-
-      const order: Order = {
-              orderId: '',
-              orderDate: '',
-              totalAmount: 0,
-              currency: marketplaceCurrency,
-              items: [],
-              orderStatus: '',
-              detailsUrl: '',
-              promotions: [],
-              totalSavings: 0,
-              orderType: isDigital ? 'digital' : 'physical',
+      const item: OrderItem = {
+        title: '',
+        asin: asin,
+        quantity: 1,
+        price: 0,
+        discount: 0,
+        itemUrl: `https://www.amazon.com/dp/${asin}`,
       };
 
-      // Extract order ID from yohtmlc-order-id span or text content
-      const orderIdEl = orderEl.querySelector('.yohtmlc-order-id');
-         if (orderIdEl) {
-                 const idText = orderIdEl.textContent || '';
-                 const extracted = extractOrderId(idText);
-                 if (extracted) order.orderId = extracted;
-         }
+      // Get title
+      let title = anchor.textContent?.trim() || '';
 
-      // Fallback: scan all text for order ID pattern
-      if (!order.orderId) {
-              const fullText = orderEl.textContent || '';
-              const extracted = extractOrderId(fullText);
-              if (extracted) order.orderId = extracted;
+      if (!title || title.length < 5) {
+        let parent = anchor.parentElement;
+        for (let i = 0; i < 5 && parent; i++) {
+          const titleEl = parent.querySelector(
+            '.a-text-bold, [class*="product-title"], [class*="item-title"]'
+          );
+          if (
+            titleEl &&
+            titleEl.textContent?.trim().length &&
+            titleEl.textContent.trim().length > 5
+          ) {
+            title = titleEl.textContent.trim();
+            break;
+          }
+          parent = parent.parentElement;
+        }
       }
 
-      // Extract order details URL
-      const detailsLink = orderEl.querySelector(
-              'a[href*="order-details"], a[href*="orderID="], a[href*="orderId="]',
-            ) as HTMLAnchorElement | null;
-         if (detailsLink) {
-                 order.detailsUrl = detailsLink.href;
-                 if (!order.orderId) {
-                           const idFromUrl = extractOrderIdFromUrl(detailsLink.href);
-                           if (idFromUrl) order.orderId = idFromUrl;
-                 }
-         }
-
-      // Extract order dates from supported locales
-      order.orderDate = parseOrderDate(orderText) || '';
-
-      // Extract Total Amount
-      const priceResult = extractPriceFromText(orderText);
-         if (priceResult) {
-                 order.totalAmount = priceResult.amount;
-                 // Currency comes from the marketplace domain, not the parsed text.
-         }
-
-      // Extract Order Status (physical orders only - digital orders have no shipping status)
-      if (!isDigital) {
-              order.orderStatus = parseOrderStatus(orderText) || '';
+      if (!title || title.length < 5) {
+        const img =
+          anchor.querySelector('img') || anchor.closest('[class*="item"]')?.querySelector('img');
+        if (img) title = (img as HTMLImageElement).alt || '';
       }
 
-      // Extract Items
-      order.items = isDigital ? parseDigitalOrderItems(orderEl) : parseOrderItems(orderEl);
-
-      // Filter out advertisement/fake orders
-      if (isAdvertisementOrder(order)) {
-              console.log('[Amazon Exporter] Skipping advertisement order:', order.orderId);
-              return null;
+      if (!title || title.length < 5) {
+        title = orderEl.querySelector('img')?.alt || '';
       }
 
-      return order;
-   }
+      item.title = title;
 
-   /**
-     * Parse items from a physical order element
-     */
-   function parseOrderItems(orderEl: Element): OrderItem[] {
-         const items: OrderItem[] = [];
-         const seenAsins = new Set<string>();
+      // Get quantity
+      let foundQuantity = false;
+      let parentEl: Element | null = anchor.parentElement;
+      for (let i = 0; i < 5 && parentEl; i++) {
+        const qtyBadge = parentEl.querySelector(
+          '.product-image__qty, [class*="qty-badge"], [class*="quantity-badge"]'
+        );
+        if (qtyBadge) {
+          const qtyText = qtyBadge.textContent?.trim();
+          if (qtyText) {
+            const qty = parseInt(qtyText, 10);
+            if (!isNaN(qty) && qty > 0) {
+              item.quantity = qty;
+              foundQuantity = true;
+              break;
+            }
+          }
+        }
+        parentEl = parentEl.parentElement;
+      }
 
-      // Find all product links
-      const productLinks = orderEl.querySelectorAll(
-              'a[href*="/dp/"], a[href*="/product/"], a[href*="/gp/product/"]',
-            );
+      // Fallback: look for text patterns like "Qty: 2"
+      if (!foundQuantity) {
+        parentEl = anchor.parentElement;
+        for (let i = 0; i < 5 && parentEl; i++) {
+          const qtyMatch = (parentEl.textContent || '').match(
+            /(?:Qty|Quantity|Menge|Anzahl)[:\s]*(\d+)/i
+          );
+          if (qtyMatch?.[1]) {
+            item.quantity = parseInt(qtyMatch[1], 10);
+            break;
+          }
+          parentEl = parentEl.parentElement;
+        }
+      }
 
-      productLinks.forEach((link) => {
-              const anchor = link as HTMLAnchorElement;
-              const asin = extractAsinFromUrl(anchor.href);
-              if (!asin) return;
+      if (item.title || item.asin) {
+        items.push(item);
+      }
+    });
 
-                                 if (seenAsins.has(asin)) return;
-              seenAsins.add(asin);
+    return items;
+  }
 
-                                 const item: OrderItem = {
-                                           title: '',
-                                           asin: asin,
-                                           quantity: 1,
-                                           price: 0,
-                                           discount: 0,
-                                           itemUrl: `https://www.amazon.com/dp/${asin}`,
-                                 };
+  /**
+   * Parse items from a digital order element (Prime Video, Kindle, Audible, etc.)
+   */
+  function parseDigitalOrderItems(orderEl: Element): OrderItem[] {
+    const items: OrderItem[] = [];
+    const seenIds = new Set<string>();
 
-                                 // Get title
-                                 let title = anchor.textContent?.trim() || '';
+    // Find all links that could be digital item links
+    const allLinks = Array.from(orderEl.querySelectorAll('a[href]')) as HTMLAnchorElement[];
 
-                                 if (!title || title.length < 5) {
-                                           let parent = anchor.parentElement;
-                                           for (let i = 0; i < 5 && parent; i++) {
-                                                       const titleEl = parent.querySelector(
-                                                                     '.a-text-bold, [class*="product-title"], [class*="item-title"]',
-                                                                   );
-                                                       if (
-                                                                     titleEl &&
-                                                                     titleEl.textContent?.trim().length &&
-                                                                     titleEl.textContent.trim().length > 5
-                                                                   ) {
-                                                                     title = titleEl.textContent.trim();
-                                                                     break;
-                                                       }
-                                                       parent = parent.parentElement;
-                                           }
-                                 }
+    // Filter to links that have meaningful text and point to digital content
+    const titleLinks = allLinks.filter((a) => {
+      const href = a.href || '';
+      const text = a.textContent?.trim() || '';
+      return (
+        text.length > 2 &&
+        text !== 'View order details' &&
+        text !== 'View invoice' &&
+        text !== 'Write a product review' &&
+        text !== 'Your Video Library' &&
+        text !== 'More options' &&
+        (href.includes('/gp/video/detail/') ||
+          href.includes('/dp/') ||
+          href.includes('/gp/product/') ||
+          href.includes('/pd/') ||
+          href.includes('/gp/aw/d/'))
+      );
+    });
 
-                                 if (!title || title.length < 5) {
-                                           const img = anchor.querySelector('img') || anchor.closest('[class*="item"]')?.querySelector('img');
-                                           if (img) title = (img as HTMLImageElement).alt || '';
-                                 }
+    titleLinks.forEach((anchor) => {
+      const href = anchor.href;
+      const asin = extractAsinFromUrl(href) || '';
+      const digitalId = extractDigitalIdFromUrl(href) || '';
+      const uniqueId = digitalId || asin;
 
-                                 if (!title || title.length < 5) {
-                                           title = orderEl.querySelector('img')?.alt || '';
-                                 }
+      if (!uniqueId) return;
+      if (seenIds.has(uniqueId)) return;
+      seenIds.add(uniqueId);
 
-                                 item.title = title;
+      // Get the content type label (e.g. "Prime Video", "Kindle", "Audible")
+      const contentTypeEl = orderEl.querySelector('.a-size-small.a-text-bold');
+      const contentType = contentTypeEl?.textContent?.trim() || '';
 
-                                 // Get quantity
-                                 let foundQuantity = false;
-              let parentEl: Element | null = anchor.parentElement;
-              for (let i = 0; i < 5 && parentEl; i++) {
-                        const qtyBadge = parentEl.querySelector(
-                                    '.product-image__qty, [class*="qty-badge"], [class*="quantity-badge"]',
-                                  );
-                        if (qtyBadge) {
-                                    const qtyText = qtyBadge.textContent?.trim();
-                                    if (qtyText) {
-                                                  const qty = parseInt(qtyText, 10);
-                                                  if (!isNaN(qty) && qty > 0) {
-                                                                  item.quantity = qty;
-                                                                  foundQuantity = true;
-                                                                  break;
-                                                  }
-                                    }
-                        }
-                        parentEl = parentEl.parentElement;
-              }
+      // Title is the link text (already filtered to have text > 2 chars)
+      const title = anchor.textContent?.trim() || orderEl.querySelector('img')?.alt || '';
 
-                                 // Fallback: look for text patterns like "Qty: 2"
-                                 if (!foundQuantity) {
-                                           parentEl = anchor.parentElement;
-                                           for (let i = 0; i < 5 && parentEl; i++) {
-                                                       const qtyMatch = (parentEl.textContent || '').match(
-                                                                     /(?:Qty|Quantity|Menge|Anzahl)[:\s]*(\d+)/i,
-                                                                   );
-                                                       if (qtyMatch?.[1]) {
-                                                                     item.quantity = parseInt(qtyMatch[1], 10);
-                                                                     break;
-                                                       }
-                                                       parentEl = parentEl.parentElement;
-                                           }
-                                 }
+      const item: OrderItem = {
+        title,
+        asin,
+        digitalId,
+        quantity: 1, // digital items are always quantity 1
+        price: 0, // filled in later from order details page
+        discount: 0,
+        itemUrl: href,
+        contentType,
+      };
 
-                                 if (item.title || item.asin) {
-                                           items.push(item);
-                                 }
+      items.push(item);
+    });
+
+    // If no links matched, fall back to using the image alt text
+    if (items.length === 0) {
+      const img = orderEl.querySelector('img');
+      if (img && img.alt) {
+        const contentTypeEl = orderEl.querySelector('.a-size-small.a-text-bold');
+        items.push({
+          title: img.alt,
+          asin: '',
+          digitalId: '',
+          quantity: 1,
+          price: 0,
+          discount: 0,
+          itemUrl: '',
+          contentType: contentTypeEl?.textContent?.trim() || '',
+        });
+      }
+    }
+
+    return items;
+  }
+
+  /**
+   * Fetch order details for item prices and discounts
+   */
+  async function fetchOrderDetailsForPrices(orders: Order[]): Promise<void> {
+    const ordersNeedingDetails = orders.filter((o) => o.detailsUrl);
+
+    console.log('[Amazon Exporter] Fetching details for', ordersNeedingDetails.length, 'orders');
+
+    for (let i = 0; i < ordersNeedingDetails.length; i++) {
+      const order = ordersNeedingDetails[i];
+      if (!order) continue;
+
+      try {
+        updateProgress(
+          80 + (i / ordersNeedingDetails.length) * 10,
+          getMessage('fetchingPricesProgress', [String(i + 1), String(ordersNeedingDetails.length)])
+        );
+
+        const response = await fetch(order.detailsUrl, {
+          credentials: 'include',
+        });
+
+        if (!response.ok) continue;
+
+        const html = await response.text();
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+
+        if (order.orderType === 'digital') {
+          parseDigitalOrderPricesFromReceipt(order, doc);
+        } else {
+          parseItemPricesFromDetails(order, doc);
+          parsePromotionsFromDetails(order, doc);
+        }
+
+        // Capture the order-summary breakdown (subtotal, tax, rewards/points).
+        // Orders paid entirely with points show Grand Total $0.00 on the card.
+        parseOrderSummaryFromDetails(order, doc);
+
+        await new Promise((r) => setTimeout(r, 200)); // small delay to be polite
+      } catch (error) {
+        console.warn('[Amazon Exporter] Error fetching details:', error);
+      }
+    }
+  }
+
+  /**
+   * Parse item prices from a physical order details page
+   */
+  function parseItemPricesFromDetails(order: Order, doc: Document): void {
+    if (order.items.length === 0) return;
+
+    // Look for product containers with prices
+    const itemContainers = doc.querySelectorAll(
+      '.a-row, [class*="shipment-item"], [class*="od-shipment-item"], tr, .a-fixed-left-grid-inner'
+    );
+
+    itemContainers.forEach((container) => {
+      const text = container.textContent || '';
+
+      // Try to match item to a known ASIN
+      const matchedItem = order.items.find((item) => item.asin && text.includes(item.asin));
+
+      if (matchedItem) {
+        const priceEl = container.querySelector(
+          '.a-price .a-offscreen, .a-color-price, [class*="item-price"]'
+        );
+        if (priceEl) {
+          const priceResult = extractPriceFromText(priceEl.textContent || '');
+          if (priceResult && priceResult.amount > 0) {
+            matchedItem.price = priceResult.amount;
+          }
+        }
+      }
+    });
+
+    // Fallback: if only one item and total is known, use that
+    if (
+      order.items.length === 1 &&
+      order.items[0] &&
+      order.items[0].price === 0 &&
+      order.totalAmount > 0
+    ) {
+      order.items[0].price = order.totalAmount;
+    }
+  }
+
+  /**
+   * Parse item prices from a digital order receipt/details page
+   */
+  function parseDigitalOrderPricesFromReceipt(order: Order, doc: Document): void {
+    if (order.items.length === 0) return;
+
+    // Digital receipts have a simpler structure — one item per order typically
+    // Look for price in the order summary table
+    const priceSelectors = [
+      '.a-price .a-offscreen',
+      '.a-color-price',
+      '[class*="price"]',
+      '.grand-total-price',
+      '.order-total .a-color-price',
+    ];
+
+    for (const sel of priceSelectors) {
+      const priceEl = doc.querySelector(sel);
+      if (priceEl) {
+        const priceResult = extractPriceFromText(priceEl.textContent || '');
+        if (priceResult && priceResult.amount > 0) {
+          // Apply to first item (digital orders are typically single-item)
+          if (order.items[0]) {
+            order.items[0].price = priceResult.amount;
+          }
+          return;
+        }
+      }
+    }
+
+    // Last resort: use the order total
+    if (order.items[0] && order.items[0].price === 0 && order.totalAmount > 0) {
+      order.items[0].price = order.totalAmount;
+    }
+  }
+
+  /**
+   * Parse promotions from order details page
+   */
+  function parsePromotionsFromDetails(order: Order, doc: Document): void {
+    const promotionSelectors = ['[class*="promotion"]', '[class*="discount"]', '.savings'];
+
+    for (const sel of promotionSelectors) {
+      const promoEls = doc.querySelectorAll(sel);
+      promoEls.forEach((el) => {
+        const text = el.textContent || '';
+        const priceResult = extractPriceFromText(text);
+        if (priceResult && priceResult.amount > 0) {
+          const description =
+            el.querySelector('[class*="label"], span')?.textContent?.trim() || 'Promotion';
+          const promotion: Promotion = {
+            description,
+            amount: priceResult.amount,
+          };
+          if (!order.promotions.find((p) => p.description === promotion.description)) {
+            order.promotions.push(promotion);
+            order.totalSavings += promotion.amount;
+          }
+        }
       });
+    }
+  }
 
-      return items;
-   }
+  /**
+   * Parse the order-summary breakdown (item subtotal, tax, rewards/points
+   * applied, grand total) from an order details page.
+   */
+  function parseOrderSummaryFromDetails(order: Order, doc: Document): void {
+    const summaryEl = doc.querySelector('#od-subtotals, [class*="order-summary"]');
+    const text = summaryEl?.textContent || doc.body.textContent || '';
+    const summary = parseOrderSummary(text);
 
-   /**
-     * Parse items from a digital order element (Prime Video, Kindle, Audible, etc.)
-     */
-   function parseDigitalOrderItems(orderEl: Element): OrderItem[] {
-         const items: OrderItem[] = [];
-         const seenIds = new Set<string>();
+    if (summary.itemSubtotal !== null) order.itemSubtotal = summary.itemSubtotal;
+    if (summary.tax !== null) order.tax = summary.tax;
+    if (summary.rewardsApplied !== null) order.rewardsApplied = summary.rewardsApplied;
 
-      // Find all links that could be digital item links
-      const allLinks = Array.from(orderEl.querySelectorAll('a[href]')) as HTMLAnchorElement[];
+    // The card normally provides the grand total; fall back to the summary
+    // value if the card had none.
+    if (order.totalAmount === 0 && summary.grandTotal !== null) {
+      order.totalAmount = summary.grandTotal;
+    }
+  }
 
-      // Filter to links that have meaningful text and point to digital content
-      const titleLinks = allLinks.filter((a) => {
-              const href = a.href || '';
-              const text = a.textContent?.trim() || '';
-              return (
-                        text.length > 2 &&
-                        text !== 'View order details' &&
-                        text !== 'View invoice' &&
-                        text !== 'Write a product review' &&
-                        text !== 'Your Video Library' &&
-                        text !== 'More options' &&
-                        (href.includes('/gp/video/detail/') ||
-                                   href.includes('/dp/') ||
-                                   href.includes('/gp/product/') ||
-                                   href.includes('/pd/') ||
-                                   href.includes('/gp/aw/d/'))
-                      );
+  /**
+   * Update the progress display in the popup
+   */
+  function updateProgress(percent: number, message: string): void {
+    browser.runtime
+      .sendMessage({
+        action: 'updateProgress',
+        data: {
+          percent: Math.min(100, Math.round(percent)),
+          message,
+        },
+      })
+      .catch(() => {
+        // Popup may be closed
       });
-
-      titleLinks.forEach((anchor) => {
-              const href = anchor.href;
-              const asin = extractAsinFromUrl(href) || '';
-              const digitalId = extractDigitalIdFromUrl(href) || '';
-              const uniqueId = digitalId || asin;
-
-                               if (!uniqueId) return;
-              if (seenIds.has(uniqueId)) return;
-              seenIds.add(uniqueId);
-
-                               // Get the content type label (e.g. "Prime Video", "Kindle", "Audible")
-                               const contentTypeEl = orderEl.querySelector('.a-size-small.a-text-bold');
-              const contentType = contentTypeEl?.textContent?.trim() || '';
-
-                               // Title is the link text (already filtered to have text > 2 chars)
-                               const title = anchor.textContent?.trim() || orderEl.querySelector('img')?.alt || '';
-
-                               const item: OrderItem = {
-                                         title,
-                                         asin,
-                                         digitalId,
-                                         quantity: 1, // digital items are always quantity 1
-                                         price: 0,    // filled in later from order details page
-                                         discount: 0,
-                                         itemUrl: href,
-                                         contentType,
-                               };
-
-                               items.push(item);
-      });
-
-      // If no links matched, fall back to using the image alt text
-      if (items.length === 0) {
-              const img = orderEl.querySelector('img');
-              if (img && img.alt) {
-                        const contentTypeEl = orderEl.querySelector('.a-size-small.a-text-bold');
-                        items.push({
-                                    title: img.alt,
-                                    asin: '',
-                                    digitalId: '',
-                                    quantity: 1,
-                                    price: 0,
-                                    discount: 0,
-                                    itemUrl: '',
-                                    contentType: contentTypeEl?.textContent?.trim() || '',
-                        });
-              }
-      }
-
-      return items;
-   }
-
-   /**
-     * Fetch order details for item prices and discounts
-     */
-   async function fetchOrderDetailsForPrices(orders: Order[]): Promise<void> {
-         const ordersNeedingDetails = orders.filter((o) => o.detailsUrl);
-
-      console.log('[Amazon Exporter] Fetching details for', ordersNeedingDetails.length, 'orders');
-
-      for (let i = 0; i < ordersNeedingDetails.length; i++) {
-              const order = ordersNeedingDetails[i];
-              if (!order) continue;
-
-           try {
-                     updateProgress(
-                                 80 + (i / ordersNeedingDetails.length) * 10,
-                                 getMessage('fetchingPricesProgress', [String(i + 1), String(ordersNeedingDetails.length)]),
-                               );
-
-                const response = await fetch(order.detailsUrl, {
-                            credentials: 'include',
-                });
-
-                if (!response.ok) continue;
-
-                const html = await response.text();
-                     const doc = new DOMParser().parseFromString(html, 'text/html');
-
-                if (order.orderType === 'digital') {
-                            parseDigitalOrderPricesFromReceipt(order, doc);
-                } else {
-                            parseItemPricesFromDetails(order, doc);
-                            parsePromotionsFromDetails(order, doc);
-                }
-
-                // Capture the order-summary breakdown (subtotal, tax, rewards/points).
-                // Orders paid entirely with points show Grand Total $0.00 on the card.
-                parseOrderSummaryFromDetails(order, doc);
-
-                await new Promise((r) => setTimeout(r, 200)); // small delay to be polite
-           } catch (error) {
-                     console.warn('[Amazon Exporter] Error fetching details:', error);
-           }
-      }
-   }
-
-   /**
-     * Parse item prices from a physical order details page
-     */
-   function parseItemPricesFromDetails(order: Order, doc: Document): void {
-         if (order.items.length === 0) return;
-
-      // Look for product containers with prices
-      const itemContainers = doc.querySelectorAll(
-              '.a-row, [class*="shipment-item"], [class*="od-shipment-item"], tr, .a-fixed-left-grid-inner',
-            );
-
-      itemContainers.forEach((container) => {
-              const text = container.textContent || '';
-
-                                   // Try to match item to a known ASIN
-                                   const matchedItem = order.items.find(
-                                             (item) => item.asin && text.includes(item.asin),
-                                           );
-
-                                   if (matchedItem) {
-                                             const priceEl = container.querySelector(
-                                                         '.a-price .a-offscreen, .a-color-price, [class*="item-price"]',
-                                                       );
-                                             if (priceEl) {
-                                                         const priceResult = extractPriceFromText(priceEl.textContent || '');
-                                                         if (priceResult && priceResult.amount > 0) {
-                                                                       matchedItem.price = priceResult.amount;
-                                                         }
-                                             }
-                                   }
-      });
-
-      // Fallback: if only one item and total is known, use that
-      if (order.items.length === 1 && order.items[0] && order.items[0].price === 0 && order.totalAmount > 0) {
-              order.items[0].price = order.totalAmount;
-      }
-   }
-
-   /**
-     * Parse item prices from a digital order receipt/details page
-     */
-   function parseDigitalOrderPricesFromReceipt(order: Order, doc: Document): void {
-         if (order.items.length === 0) return;
-
-      // Digital receipts have a simpler structure — one item per order typically
-      // Look for price in the order summary table
-      const priceSelectors = [
-              '.a-price .a-offscreen',
-              '.a-color-price',
-              '[class*="price"]',
-              '.grand-total-price',
-              '.order-total .a-color-price',
-            ];
-
-      for (const sel of priceSelectors) {
-              const priceEl = doc.querySelector(sel);
-              if (priceEl) {
-                        const priceResult = extractPriceFromText(priceEl.textContent || '');
-                        if (priceResult && priceResult.amount > 0) {
-                                    // Apply to first item (digital orders are typically single-item)
-                          if (order.items[0]) {
-                                        order.items[0].price = priceResult.amount;
-                          }
-                                    return;
-                        }
-              }
-      }
-
-      // Last resort: use the order total
-      if (order.items[0] && order.items[0].price === 0 && order.totalAmount > 0) {
-              order.items[0].price = order.totalAmount;
-      }
-   }
-
-   /**
-     * Parse promotions from order details page
-     */
-   function parsePromotionsFromDetails(order: Order, doc: Document): void {
-         const promotionSelectors = [
-                 '[class*="promotion"]',
-                 '[class*="discount"]',
-                 '.savings',
-               ];
-
-      for (const sel of promotionSelectors) {
-              const promoEls = doc.querySelectorAll(sel);
-              promoEls.forEach((el) => {
-                        const text = el.textContent || '';
-                        const priceResult = extractPriceFromText(text);
-                        if (priceResult && priceResult.amount > 0) {
-                                    const description = el.querySelector('[class*="label"], span')?.textContent?.trim() || 'Promotion';
-                                    const promotion: Promotion = {
-                                                  description,
-                                                  amount: priceResult.amount,
-                                    };
-                                    if (!order.promotions.find((p) => p.description === promotion.description)) {
-                                                  order.promotions.push(promotion);
-                                                  order.totalSavings += promotion.amount;
-                                    }
-                        }
-              });
-      }
-   }
-
-   /**
-     * Parse the order-summary breakdown (item subtotal, tax, rewards/points
-     * applied, grand total) from an order details page.
-     */
-   function parseOrderSummaryFromDetails(order: Order, doc: Document): void {
-         const summaryEl = doc.querySelector('#od-subtotals, [class*="order-summary"]');
-         const text = summaryEl?.textContent || doc.body.textContent || '';
-         const summary = parseOrderSummary(text);
-
-      if (summary.itemSubtotal !== null) order.itemSubtotal = summary.itemSubtotal;
-         if (summary.tax !== null) order.tax = summary.tax;
-         if (summary.rewardsApplied !== null) order.rewardsApplied = summary.rewardsApplied;
-
-      // The card normally provides the grand total; fall back to the summary
-      // value if the card had none.
-      if (order.totalAmount === 0 && summary.grandTotal !== null) {
-              order.totalAmount = summary.grandTotal;
-      }
-   }
-
-   /**
-     * Update the progress display in the popup
-     */
-   function updateProgress(percent: number, message: string): void {
-         browser.runtime.sendMessage({
-                 action: 'updateProgress',
-                 data: {
-                         percent: Math.min(100, Math.round(percent)),
-                         message,
-                 },
-         }).catch(() => {
-                 // Popup may be closed
-         });
-   }
+  }
 })();
